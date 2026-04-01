@@ -145,8 +145,10 @@ class TestMCPEndpoint:
 
     def test_mcp_get_not_allowed(self, client):
         """GET /mcp is not a valid method for streamable HTTP."""
-        resp = client.get("/mcp")
-        assert resp.status_code in (405, 406)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MCP_API_KEY", None)
+            resp = client.get("/mcp")
+            assert resp.status_code in (405, 406)
 
 
 # ---------------------------------------------------------------------------

@@ -167,7 +167,7 @@ def create_app() -> Starlette:
 # Entrypoint
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    transport = os.environ.get("MCP_TRANSPORT", "sse").lower()
+    transport = os.environ.get("MCP_TRANSPORT", "streamable-http").lower()
     host = os.environ.get("MCP_HOST", "0.0.0.0")
     port = int(os.environ.get("MCP_PORT", "8000"))
 
@@ -175,7 +175,7 @@ if __name__ == "__main__":
         logger.info("Starting Agentforce MCP server (stdio)...")
         mcp.run(transport="stdio")
     else:
-        logger.info("Starting Agentforce MCP server (%s) on %s:%s...", transport, host, port)
+        logger.info("Starting Agentforce MCP server (streamable-http) on %s:%s...", host, port)
 
         import uvicorn
 
