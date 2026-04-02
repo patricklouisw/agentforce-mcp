@@ -208,26 +208,120 @@ class TestGetAgentforceClient:
 
 
 # ---------------------------------------------------------------------------
+# Resolve conversation ID helper
+# ---------------------------------------------------------------------------
+class TestResolveConversationId:
+    def test_explicit_id_takes_priority(self):
+        """Explicit conversation_id param should be used even if header is set."""
+        from server import _resolve_conversation_id, _vapi_id_var
+
+        token = _vapi_id_var.set("header-id")
+        try:
+            assert _resolve_conversation_id("explicit-id") == "explicit-id"
+        finally:
+            _vapi_id_var.reset(token)
+
+    def test_falls_back_to_vapi_header(self):
+        """When no explicit ID, should use VAPI header from context var."""
+        from server import _resolve_conversation_id, _vapi_id_var
+
+        token = _vapi_id_var.set("vapi-call-123")
+        try:
+            assert _resolve_conversation_id(None) == "vapi-call-123"
+        finally:
+            _vapi_id_var.reset(token)
+
+    def test_generates_uuid_as_fallback(self):
+        """When no explicit ID and no header, should generate a UUID."""
+        from server import _resolve_conversation_id, _vapi_id_var
+
+        token = _vapi_id_var.set(None)
+        try:
+            result = _resolve_conversation_id(None)
+            import uuid
+            uuid.UUID(result)
+        finally:
+            _vapi_id_var.reset(token)
+
+
+# ---------------------------------------------------------------------------
+# VapiIdMiddleware
+# ---------------------------------------------------------------------------
+class TestVapiIdMiddleware:
+    def test_call_id_header(self, client):
+        """X-Call-Id header should be captured."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MCP_API_KEY", None)
+            resp = client.get(
+                "/health",
+                headers={"X-Call-Id": "vapi-call-abc"},
+            )
+            assert resp.status_code == 200
+
+    def test_chat_id_header(self, client):
+        """X-Chat-Id header should be captured."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MCP_API_KEY", None)
+            resp = client.get(
+                "/health",
+                headers={"X-Chat-Id": "vapi-chat-abc"},
+            )
+            assert resp.status_code == 200
+
+    def test_call_id_takes_priority_over_chat_id(self):
+        """X-Call-Id should be preferred over X-Chat-Id and X-Session-Id."""
+        from server import _resolve_conversation_id, _vapi_id_var
+
+        # Simulate middleware resolving: X-Call-Id wins
+        token = _vapi_id_var.set("call-id-wins")
+        try:
+            assert _resolve_conversation_id(None) == "call-id-wins"
+        finally:
+            _vapi_id_var.reset(token)
+
+
+# ---------------------------------------------------------------------------
 # MCP tools (unit tests with mocked AgentforceClient)
 # ---------------------------------------------------------------------------
 class TestSendMessageTool:
     @patch("server.get_agentforce_client")
-    def test_send_message_success(self, mock_get_client):
+    def test_send_message_with_explicit_id(self, mock_get_client):
+        """Explicit conversation_id param should be used."""
         mock_client = AsyncMock()
         mock_client.send_message.return_value = {
             "conversation_id": "conv-1",
-            "response": "Hello! How can I help?",
+            "response": "Hello!",
         }
         mock_get_client.return_value = mock_client
 
         from server import send_message
         import asyncio
 
-        result = asyncio.run(send_message("conv-1", "Hi there"))
+        result = asyncio.run(send_message("Hi there", conversation_id="conv-1"))
 
         assert result["conversation_id"] == "conv-1"
-        assert result["response"] == "Hello! How can I help?"
+        assert result["response"] == "Hello!"
         mock_client.send_message.assert_called_once_with("conv-1", "Hi there")
+
+    @patch("server.get_agentforce_client")
+    def test_send_message_uses_vapi_header(self, mock_get_client):
+        """When no explicit ID, should use VAPI header from context var."""
+        from server import send_message, _vapi_id_var
+        import asyncio
+
+        mock_client = AsyncMock()
+        mock_client.send_message.return_value = {
+            "conversation_id": "vapi-call-xyz",
+            "response": "Response",
+        }
+        mock_get_client.return_value = mock_client
+
+        token = _vapi_id_var.set("vapi-call-xyz")
+        try:
+            asyncio.run(send_message("Test message"))
+            mock_client.send_message.assert_called_once_with("vapi-call-xyz", "Test message")
+        finally:
+            _vapi_id_var.reset(token)
 
     @patch("server.get_agentforce_client")
     def test_send_message_error(self, mock_get_client):
@@ -240,31 +334,14 @@ class TestSendMessageTool:
         from server import send_message
         import asyncio
 
-        result = asyncio.run(send_message("conv-1", "Hi"))
+        result = asyncio.run(send_message("Hi", conversation_id="conv-1"))
 
         assert "error" in result
-
-    @patch("server.get_agentforce_client")
-    def test_send_message_passes_conversation_id(self, mock_get_client):
-        """Different conversation_ids should be passed through to the client."""
-        mock_client = AsyncMock()
-        mock_client.send_message.return_value = {
-            "conversation_id": "vapi-call-xyz",
-            "response": "Response",
-        }
-        mock_get_client.return_value = mock_client
-
-        from server import send_message
-        import asyncio
-
-        asyncio.run(send_message("vapi-call-xyz", "Test message"))
-
-        mock_client.send_message.assert_called_once_with("vapi-call-xyz", "Test message")
 
 
 class TestEndConversationTool:
     @patch("server.get_agentforce_client")
-    def test_end_conversation_success(self, mock_get_client):
+    def test_end_conversation_with_explicit_id(self, mock_get_client):
         mock_client = AsyncMock()
         mock_client.end_conversation.return_value = {
             "conversation_id": "conv-1",
@@ -275,24 +352,28 @@ class TestEndConversationTool:
         from server import end_conversation
         import asyncio
 
-        result = asyncio.run(end_conversation("conv-1"))
+        result = asyncio.run(end_conversation(conversation_id="conv-1"))
 
         assert result == {"conversation_id": "conv-1", "status": "ended"}
         mock_client.end_conversation.assert_called_once_with("conv-1")
 
     @patch("server.get_agentforce_client")
-    def test_end_conversation_idempotent(self, mock_get_client):
-        """Ending an unknown conversation should still return success."""
+    def test_end_conversation_uses_vapi_header(self, mock_get_client):
+        """When no explicit ID, should use VAPI header from context var."""
+        from server import end_conversation, _vapi_id_var
+        import asyncio
+
         mock_client = AsyncMock()
         mock_client.end_conversation.return_value = {
-            "conversation_id": "unknown",
+            "conversation_id": "vapi-call-xyz",
             "status": "ended",
         }
         mock_get_client.return_value = mock_client
 
-        from server import end_conversation
-        import asyncio
-
-        result = asyncio.run(end_conversation("unknown"))
-
-        assert result["status"] == "ended"
+        token = _vapi_id_var.set("vapi-call-xyz")
+        try:
+            result = asyncio.run(end_conversation())
+            assert result["status"] == "ended"
+            mock_client.end_conversation.assert_called_once_with("vapi-call-xyz")
+        finally:
+            _vapi_id_var.reset(token)

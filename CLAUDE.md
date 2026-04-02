@@ -8,8 +8,18 @@ This is a **Model Context Protocol (MCP) server** named `agentforce-mcp`, built 
 
 ## Architecture
 
-- **server.py** - MCP server entry point. Defines tools, middleware, health check, and app factory. Follows the same patterns as `salesforce-mcp`.
+- **server.py** - MCP server entry point. Defines tools, middleware (auth, VAPI ID extraction), health check, and app factory.
 - **agentforce_client.py** - Async client for the Agentforce Agent API. Handles OAuth authentication, session lifecycle, and conversation-to-session mapping.
+- **.env** - Environment variables (not committed). Loaded automatically via `python-dotenv`.
+
+### VAPI Integration
+
+The server automatically extracts VAPI's conversation identifier from HTTP headers via `VapiIdMiddleware`:
+- `X-Call-Id` (voice calls, highest priority)
+- `X-Chat-Id` (chat interactions)
+- `X-Session-Id` (chat sessions)
+
+This means the LLM only needs to pass `message` to `send_message` — no `conversation_id` tracking required.
 
 ## Package Management
 
@@ -39,8 +49,8 @@ uv run pytest -v
 
 | Tool | Description |
 |------|-------------|
-| `send_message` | Send a message to the Agentforce agent. Auto-creates session on first call per conversation_id. |
-| `end_conversation` | End a conversation and clean up its Agentforce session. Idempotent. |
+| `send_message(message)` | Send a message to the Agentforce agent. Auto-creates session on first call, reuses on subsequent calls. `conversation_id` is auto-resolved from VAPI headers. |
+| `end_conversation()` | End a conversation and clean up its Agentforce session. Idempotent. `conversation_id` is auto-resolved from VAPI headers. |
 
 ## Environment Variables
 
@@ -52,7 +62,7 @@ uv run pytest -v
 | `SF_AGENT_ID` | Yes | - | Agentforce Agent ID |
 | `SF_BYPASS_USER` | No | `true` | Use agent-assigned user vs token user |
 | `MCP_API_KEY` | No | - | Bearer token for VAPI auth |
-| `MCP_TRANSPORT` | No | `sse` | `sse` (HTTP) or `stdio` |
+| `MCP_TRANSPORT` | No | `streamable-http` | `streamable-http` (HTTP) or `stdio` |
 | `MCP_HOST` | No | `0.0.0.0` | HTTP bind address |
 | `MCP_PORT` | No | `8000` | HTTP port |
 | `LOG_LEVEL` | No | `INFO` | Logging level |
