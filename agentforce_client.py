@@ -140,6 +140,8 @@ class AgentforceClient:
                 url, json=payload, headers=self._auth_headers(token)
             )
 
+        if resp.status_code >= 400:
+            logger.error("Agentforce session error %s: %s", resp.status_code, resp.text)
         resp.raise_for_status()
         body = resp.json()
 
@@ -216,7 +218,7 @@ class AgentforceClient:
 
             payload = {
                 "sequenceId": session.sequence_id,
-                "message": {"type": "text", "text": message},
+                "message": {"type": "Text", "text": message},
             }
 
             logger.info(
@@ -239,6 +241,10 @@ class AgentforceClient:
                     messages_url, json=payload, headers=self._auth_headers(token)
                 )
 
+            if resp.status_code >= 400:
+                logger.error(
+                    "Agentforce API error %s: %s", resp.status_code, resp.text
+                )
             resp.raise_for_status()
             body = resp.json()
 
