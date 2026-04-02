@@ -122,7 +122,7 @@ class AgentforceClient:
         payload = {
             "externalSessionKey": str(uuid.uuid4()),
             "instanceConfig": {"endpoint": self._my_domain_url},
-            "streamingCapabilities": {"chunkTypes": ["Text"]},
+            "featureSupport": "Sync",
             "bypassUser": self._bypass_user,
         }
 
@@ -215,10 +215,17 @@ class AgentforceClient:
             messages_url = session.links.get("messages", {}).get("href")
             if not messages_url:
                 messages_url = f"{AGENT_API_BASE}/sessions/{session.session_id}/messages"
+            # Append ?sync=true for synchronous response
+            if "?" not in messages_url:
+                messages_url += "?sync=true"
 
             payload = {
-                "sequenceId": session.sequence_id,
-                "message": {"type": "Text", "text": message},
+                "message": {
+                    "sequenceId": session.sequence_id,
+                    "type": "Text",
+                    "text": message,
+                },
+                "variables": [],
             }
 
             logger.info(
