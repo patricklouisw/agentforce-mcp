@@ -301,7 +301,9 @@ class TestSendMessageTool:
 
         assert result["conversation_id"] == "conv-1"
         assert result["response"] == "Hello!"
-        mock_client.send_message.assert_called_once_with("conv-1", "Hi there")
+        mock_client.send_message.assert_called_once_with(
+            "conv-1", "Hi there", language=None
+        )
 
     @patch("server.get_agentforce_client")
     def test_send_message_uses_vapi_header(self, mock_get_client):
@@ -319,9 +321,32 @@ class TestSendMessageTool:
         token = _vapi_id_var.set("vapi-call-xyz")
         try:
             asyncio.run(send_message("Test message"))
-            mock_client.send_message.assert_called_once_with("vapi-call-xyz", "Test message")
+            mock_client.send_message.assert_called_once_with(
+                "vapi-call-xyz", "Test message", language=None
+            )
         finally:
             _vapi_id_var.reset(token)
+
+    @patch("server.get_agentforce_client")
+    def test_send_message_forwards_language(self, mock_get_client):
+        """The `language` param should be forwarded to AgentforceClient.send_message."""
+        mock_client = AsyncMock()
+        mock_client.send_message.return_value = {
+            "conversation_id": "conv-1",
+            "response": "Hola!",
+        }
+        mock_get_client.return_value = mock_client
+
+        from server import send_message
+        import asyncio
+
+        asyncio.run(
+            send_message("Hola", conversation_id="conv-1", language="es_ES")
+        )
+
+        mock_client.send_message.assert_called_once_with(
+            "conv-1", "Hola", language="es_ES"
+        )
 
     @patch("server.get_agentforce_client")
     def test_send_message_error(self, mock_get_client):

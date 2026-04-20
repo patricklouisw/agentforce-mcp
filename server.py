@@ -120,6 +120,7 @@ def get_agentforce_client() -> AgentforceClient:
         )
 
     bypass_user = os.environ.get("SF_BYPASS_USER", "true").lower() == "true"
+    default_language = os.environ.get("SF_DEFAULT_LANGUAGE") or None
 
     _client = AgentforceClient(
         my_domain_url=os.environ["SF_MY_DOMAIN_URL"],
@@ -127,6 +128,7 @@ def get_agentforce_client() -> AgentforceClient:
         consumer_secret=os.environ["SF_CONSUMER_SECRET"],
         agent_id=os.environ["SF_AGENT_ID"],
         bypass_user=bypass_user,
+        default_language=default_language,
     )
     return _client
 
@@ -154,7 +156,11 @@ def _resolve_conversation_id(conversation_id: str | None = None) -> str:
 # Tools
 # ---------------------------------------------------------------------------
 @mcp.tool()
-async def send_message(message: str, conversation_id: str | None = None) -> dict:
+async def send_message(
+    message: str,
+    conversation_id: str | None = None,
+    language: str | None = None,
+) -> dict:
     """Send a message to the Salesforce Agentforce AI agent and get a response.
 
     On the first call for a conversation, a new Agentforce session is created
@@ -169,10 +175,14 @@ async def send_message(message: str, conversation_id: str | None = None) -> dict
         message: The question or message to send to the Agentforce agent.
         conversation_id: Optional. A unique identifier for this conversation.
             Automatically provided by VAPI via X-Call-Id, X-Chat-Id, or X-Session-Id header.
+        language: Optional. ISO locale code (e.g. "en_US", "es_ES", "fr_FR")
+            for the agent's response language. Pass this when the caller
+            requests a language switch; omit to keep the current language.
+            Maps to Agentforce's $Context.EndUserLanguage context variable.
     """
     resolved_id = _resolve_conversation_id(conversation_id)
     client = get_agentforce_client()
-    return await client.send_message(resolved_id, message)
+    return await client.send_message(resolved_id, message, language=language)
 
 
 @mcp.tool()

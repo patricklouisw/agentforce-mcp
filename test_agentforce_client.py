@@ -7,7 +7,12 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from agentforce_client import AgentforceClient, SessionState
+from agentforce_client import (
+    AgentforceClient,
+    SessionState,
+    _language_variable,
+    _normalize_language,
+)
 
 
 @pytest_asyncio.fixture
@@ -326,6 +331,133 @@ class TestStaleSessionCleanup:
 
         assert "stale" not in client._conversations
         assert "fresh" in client._conversations
+
+
+# ---------------------------------------------------------------------------
+# TestLanguageHandling
+# ---------------------------------------------------------------------------
+class TestLanguageHandling:
+    """Tests for $Context.EndUserLanguage support via the `language` parameter."""
+
+    def test_normalize_valid_locales(self):
+        assert _normalize_language("en") == "en"
+        assert _normalize_language("en_US") == "en_US"
+        assert _normalize_language("  es_ES  ") == "es_ES"
+        assert _normalize_language(None) is None
+        assert _normalize_language("") is None
+
+    def test_normalize_rejects_malformed(self):
+        for bad in ("EN", "english", "en-US", "en_us", "en_USA", "123"):
+            with pytest.raises(ValueError):
+                _normalize_language(bad)
+
+    def test_language_variable_shape(self):
+        assert _language_variable("fr_FR") == {
+            "name": "$Context.EndUserLanguage",
+            "type": "Text",
+            "value": "fr_FR",
+        }
+
+    @pytest.mark.asyncio
+    async def test_session_created_with_default_language(self):
+        """default_language on the client should seed the session POST body."""
+        c = AgentforceClient(
+            my_domain_url="https://test.my.salesforce.com",
+            consumer_key="k",
+            consumer_secret="s",
+            agent_id="agent-1",
+            default_language="en_US",
+        )
+        try:
+            c._http.post = AsyncMock(
+                side_effect=[_mock_token_response(), _mock_session_response()]
+            )
+
+            session = await c._create_session()
+
+            # The 2nd POST is the session creation call
+            session_call = c._http.post.call_args_list[1]
+            body = session_call.kwargs["json"]
+            assert body["variables"] == [
+                {"name": "$Context.EndUserLanguage", "type": "Text", "value": "en_US"}
+            ]
+            assert session.language == "en_US"
+        finally:
+            await c.close()
+
+    @pytest.mark.asyncio
+    async def test_first_message_language_passed_to_create_session(self, client):
+        """First send_message with `language` should seed the session."""
+        client._http.post = AsyncMock(
+            side_effect=[
+                _mock_token_response(),
+                _mock_session_response(),
+                _mock_message_response("Hola"),
+            ]
+        )
+
+        await client.send_message("conv-1", "Hola", language="es_ES")
+
+        # Session-creation POST (index 1) carries the variables payload
+        session_call = client._http.post.call_args_list[1]
+        session_body = session_call.kwargs["json"]
+        assert session_body["variables"] == [
+            {"name": "$Context.EndUserLanguage", "type": "Text", "value": "es_ES"}
+        ]
+        # Message POST (index 2) keeps an empty variables array — no change needed
+        message_call = client._http.post.call_args_list[2]
+        assert message_call.kwargs["json"]["variables"] == []
+        assert client._conversations["conv-1"].language == "es_ES"
+
+    @pytest.mark.asyncio
+    async def test_language_change_emits_variables_on_message(self, client):
+        """A subsequent language change should include the variable in the message payload."""
+        client._http.post = AsyncMock(
+            side_effect=[
+                _mock_token_response(),
+                _mock_session_response(),
+                _mock_message_response("Hello"),
+                _mock_message_response("Hola"),
+            ]
+        )
+
+        await client.send_message("conv-1", "Hello", language="en_US")
+        await client.send_message("conv-1", "Hola", language="es_ES")
+
+        # Second message POST is index 3
+        second_call = client._http.post.call_args_list[3]
+        assert second_call.kwargs["json"]["variables"] == [
+            {"name": "$Context.EndUserLanguage", "type": "Text", "value": "es_ES"}
+        ]
+        assert client._conversations["conv-1"].language == "es_ES"
+
+    @pytest.mark.asyncio
+    async def test_unchanged_language_keeps_variables_empty(self, client):
+        """Repeating the same language should not re-send the variable."""
+        client._http.post = AsyncMock(
+            side_effect=[
+                _mock_token_response(),
+                _mock_session_response(),
+                _mock_message_response("R1"),
+                _mock_message_response("R2"),
+            ]
+        )
+
+        await client.send_message("conv-1", "One", language="en_US")
+        await client.send_message("conv-1", "Two", language="en_US")
+
+        second_call = client._http.post.call_args_list[3]
+        assert second_call.kwargs["json"]["variables"] == []
+
+    @pytest.mark.asyncio
+    async def test_invalid_language_rejected_before_http(self, client):
+        """Malformed locale should raise before any HTTP call."""
+        client._http.post = AsyncMock()
+
+        with pytest.raises(ValueError):
+            await client.send_message("conv-1", "Hi", language="english")
+
+        client._http.post.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

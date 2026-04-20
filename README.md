@@ -6,10 +6,14 @@ An MCP (Model Context Protocol) server that connects VAPI to the Salesforce Agen
 
 | Tool | Description |
 |------|-------------|
-| `send_message(message)` | Send a message to the Agentforce agent and get a response. |
+| `send_message(message, language=None)` | Send a message to the Agentforce agent and get a response. Optional `language` (ISO locale, e.g. `en_US`, `es_ES`, `fr_FR`) sets the `$Context.EndUserLanguage` context variable so the agent answers in that language — and can be changed mid-conversation. |
 | `end_conversation()` | End a conversation and clean up its Agentforce session. Idempotent. |
 
 Both tools accept an optional `conversation_id` parameter, but when called from VAPI this is **automatically resolved** from VAPI's request headers — the LLM does not need to track it.
+
+### Language switching
+
+`send_message` accepts an optional `language` parameter (ISO locale like `en_US`, `es_ES`). The server maps it to Agentforce's reserved `$Context.EndUserLanguage` context variable, which is the only `$Context` variable Agentforce allows updating after session start — so the LLM can switch languages at any turn without restarting the conversation. If the caller does not pass `language` on subsequent turns the current language is preserved. A default language can also be seeded on session creation via the optional `SF_DEFAULT_LANGUAGE` env var.
 
 ### How it works
 
@@ -59,6 +63,7 @@ SF_CONSUMER_KEY=your-consumer-key
 SF_CONSUMER_SECRET=your-consumer-secret
 SF_AGENT_ID=your-agent-id
 SF_BYPASS_USER=true
+SF_DEFAULT_LANGUAGE=en_US  # optional; ISO locale seeded on new sessions
 
 # MCP Server Configuration
 MCP_API_KEY=your-api-key
@@ -156,6 +161,7 @@ uv run pytest -v
 | `SF_CONSUMER_SECRET` | Yes | — | Connected App OAuth consumer secret |
 | `SF_AGENT_ID` | Yes | — | Agentforce Agent ID |
 | `SF_BYPASS_USER` | No | `true` | `true` = agent-assigned user, `false` = token user |
+| `SF_DEFAULT_LANGUAGE` | No | — | ISO locale (e.g. `en_US`) seeded as `$Context.EndUserLanguage` when a new session is created. If unset, the agent uses its configured default until the LLM passes `language` on a `send_message` call. |
 | `MCP_API_KEY` | No | — | Bearer token for VAPI authentication (disabled if unset) |
 | `MCP_TRANSPORT` | No | `streamable-http` | `streamable-http` (HTTP server) or `stdio` (Claude Desktop) |
 | `MCP_HOST` | No | `0.0.0.0` | HTTP bind address |

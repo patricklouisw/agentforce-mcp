@@ -49,7 +49,7 @@ uv run pytest -v
 
 | Tool | Description |
 |------|-------------|
-| `send_message(message)` | Send a message to the Agentforce agent. Auto-creates session on first call, reuses on subsequent calls. `conversation_id` is auto-resolved from VAPI headers. |
+| `send_message(message, language=None)` | Send a message to the Agentforce agent. Auto-creates session on first call, reuses on subsequent calls. `conversation_id` is auto-resolved from VAPI headers. Optional `language` (ISO locale, e.g. `en_US`, `es_ES`) sets/updates the `$Context.EndUserLanguage` context variable so the agent responds in that language; can be changed mid-conversation. |
 | `end_conversation()` | End a conversation and clean up its Agentforce session. Idempotent. `conversation_id` is auto-resolved from VAPI headers. |
 
 ## Environment Variables
@@ -61,6 +61,7 @@ uv run pytest -v
 | `SF_CONSUMER_SECRET` | Yes | - | OAuth consumer secret |
 | `SF_AGENT_ID` | Yes | - | Agentforce Agent ID |
 | `SF_BYPASS_USER` | No | `true` | Use agent-assigned user vs token user |
+| `SF_DEFAULT_LANGUAGE` | No | - | ISO locale (e.g. `en_US`) seeded as `$Context.EndUserLanguage` at session creation. If unset, the agent uses its configured default. |
 | `MCP_API_KEY` | No | - | Bearer token for VAPI auth |
 | `MCP_TRANSPORT` | No | `streamable-http` | `streamable-http` (HTTP) or `stdio` |
 | `MCP_HOST` | No | `0.0.0.0` | HTTP bind address |

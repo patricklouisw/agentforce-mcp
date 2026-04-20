@@ -2,6 +2,7 @@
 
 import dataclasses
 import logging
+import re
 import time
 import uuid
 
@@ -14,6 +15,39 @@ TOKEN_CACHE_SECONDS = 5400  # 90 minutes
 TOKEN_REFRESH_BUFFER = 300  # refresh 5 min before expiry
 STALE_SESSION_MAX_AGE = 1800  # 30 minutes
 
+# Reserved Agentforce context variable for end-user language. This is the only
+# $Context variable that Agentforce allows updating after session start.
+LANGUAGE_VARIABLE_NAME = "$Context.EndUserLanguage"
+
+# Accept ISO 639-1 codes, optionally with an ISO 3166-1 region suffix (e.g. "en", "en_US").
+_LANGUAGE_RE = re.compile(r"^[a-z]{2}(_[A-Z]{2})?$")
+
+
+def _normalize_language(lang: str | None) -> str | None:
+    """Validate and return a language locale, or None if unset.
+
+    Raises ValueError on malformed input so the MCP tool surfaces a clear error
+    to the LLM instead of letting Agentforce reject a mangled value.
+    """
+    if lang is None:
+        return None
+    lang = lang.strip()
+    if not lang:
+        return None
+    if not _LANGUAGE_RE.match(lang):
+        raise ValueError(
+            f"Invalid language {lang!r}; expected ISO locale like 'en' or 'en_US'"
+        )
+    return lang
+
+
+def _language_variable(lang: str) -> dict:
+    """Build the Agentforce variables-array element for $Context.EndUserLanguage.
+
+    Shape matches the documented Agent API variables example: {name, type, value}.
+    """
+    return {"name": LANGUAGE_VARIABLE_NAME, "type": "Text", "value": lang}
+
 
 @dataclasses.dataclass
 class SessionState:
@@ -24,6 +58,7 @@ class SessionState:
     links: dict  # _links from session creation response
     created_at: float
     last_used: float
+    language: str | None = None  # current $Context.EndUserLanguage value
 
 
 class AgentforceClient:
@@ -41,12 +76,14 @@ class AgentforceClient:
         consumer_secret: str,
         agent_id: str,
         bypass_user: bool = True,
+        default_language: str | None = None,
     ):
         self._my_domain_url = my_domain_url.rstrip("/")
         self._consumer_key = consumer_key
         self._consumer_secret = consumer_secret
         self._agent_id = agent_id
         self._bypass_user = bypass_user
+        self._default_language = _normalize_language(default_language)
 
         self._access_token: str | None = None
         self._token_expiry: float = 0.0
@@ -114,9 +151,15 @@ class AgentforceClient:
     # Session lifecycle (internal)
     # ------------------------------------------------------------------
 
-    async def _create_session(self) -> SessionState:
-        """Create a new Agentforce agent session. Returns internal SessionState."""
+    async def _create_session(self, language: str | None = None) -> SessionState:
+        """Create a new Agentforce agent session. Returns internal SessionState.
+
+        If `language` is provided it is seeded as $Context.EndUserLanguage on the
+        new session; otherwise the client's default_language (if any) is used.
+        """
         token = await self._ensure_token()
+
+        initial_language = language or self._default_language
 
         url = f"{AGENT_API_BASE}/agents/{self._agent_id}/sessions"
         payload = {
@@ -125,6 +168,8 @@ class AgentforceClient:
             "featureSupport": "Sync",
             "bypassUser": self._bypass_user,
         }
+        if initial_language:
+            payload["variables"] = [_language_variable(initial_language)]
 
         logger.info("Creating Agentforce session for agent %s", self._agent_id)
         resp = await self._http.post(
@@ -152,6 +197,7 @@ class AgentforceClient:
             links=body.get("_links", {}),
             created_at=now,
             last_used=now,
+            language=initial_language,
         )
 
         logger.info("Session created: %s", session.session_id)
@@ -189,18 +235,29 @@ class AgentforceClient:
     # Public API (called by MCP tools)
     # ------------------------------------------------------------------
 
-    async def send_message(self, conversation_id: str, message: str) -> dict:
+    async def send_message(
+        self,
+        conversation_id: str,
+        message: str,
+        language: str | None = None,
+    ) -> dict:
         """Send a message to the Agentforce agent.
 
         Auto-creates a session on first call for a given conversation_id.
         Reuses the existing session on subsequent calls.
+
+        If `language` is provided, it is applied as $Context.EndUserLanguage:
+        seeded at session creation on the first turn, or updated mid-session
+        on later turns when it differs from the current session language.
         """
         self._cleanup_stale_sessions()
 
         try:
+            normalized_language = _normalize_language(language)
+
             # Get or create session
             if conversation_id not in self._conversations:
-                session = await self._create_session()
+                session = await self._create_session(language=normalized_language)
                 self._conversations[conversation_id] = session
                 logger.info(
                     "Mapped conversation %s -> session %s",
@@ -219,13 +276,29 @@ class AgentforceClient:
             if "?" not in messages_url:
                 messages_url += "?sync=true"
 
+            # Only emit the language variable when it actually changes, so we
+            # don't churn the variables array on every turn.
+            message_variables: list[dict] = []
+            language_changed = (
+                normalized_language is not None
+                and normalized_language != session.language
+            )
+            if language_changed:
+                message_variables.append(_language_variable(normalized_language))
+                logger.info(
+                    "Updating $Context.EndUserLanguage on session %s: %s -> %s",
+                    session.session_id,
+                    session.language,
+                    normalized_language,
+                )
+
             payload = {
                 "message": {
                     "sequenceId": session.sequence_id,
                     "type": "Text",
                     "text": message,
                 },
-                "variables": [],
+                "variables": message_variables,
             }
 
             logger.info(
@@ -258,6 +331,8 @@ class AgentforceClient:
             # Increment sequence and update last_used
             session.sequence_id += 1
             session.last_used = time.time()
+            if language_changed:
+                session.language = normalized_language
 
             # Extract response text from messages
             response_text = self._extract_response_text(body)
